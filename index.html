@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PCB Test System</title>
+  <link rel="stylesheet" href="/stylesheet.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <div class="container">
+      <div class="header-wrapper">
+        <h1>PCB Test System</h1>
+        <div class="logo-container">
+          <img src="/innirion_gmbh_logo.jpeg" alt="Company Logo" class="logo-img">
+        </div>
+      </div>
+
+  <div class="section">
+    <h2>Test Profiles</h2>
+    <div id="profile-list"></div><br>
+    <div class="button-group">
+      <button onclick="showProfileCreator()">Create New Profile</button>
+      <button onclick="showQuickTestCreator()">Quick Test</button>
+    </div>
+  </div>
+
+  <div id="profile-creator" class="section" style="display:none">
+    <h3>Create/Edit Profile</h3>
+    <input type="text" id="profile-name" placeholder="Profile Name" required><br>
+    <label>Remarks:</label>
+    <textarea id="profile-remarks" rows="2" style="width:100%;" placeholder="Enter remarks for this profile..."></textarea>
+    <div id="test-steps"></div>
+    <button class="secondary" onclick="addTestStep()">Add Test Step</button>
+    <button class="button" onclick="saveProfile()">Save Profile</button>
+    <button class="cancel" onclick="hideProfileCreator()">Cancel</button>
+  </div>
+  
+  <div id="quick-test-creator" class="section" style="display:none">
+    <h3>Quick Test</h3>
+    <div id="quick-test-steps"></div>
+    <button onclick="addQuickTestStep()">Add Test Step</button>
+    <button onclick="runQuickTest()">Run Test</button>
+    <button class="cancel" onclick="hideQuickTestCreator()">Cancel</button>
+  </div>
+
+  <div id="device-info-container" style="margin-bottom: 15px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+    <strong>Instrument Info:</strong>
+    <div id="device-info" style="margin-top: 5px; font-family: monospace;"></div>
+  </div>
+
+  <div class="section">
+    <h2>Run Test</h2>
+    <select id="profile-select">
+      <option value="">Select a Profile</option>
+    </select>
+    <input type="text" id="instrument-ip" placeholder="Instrument IP" readonly><br>
+
+    <button id="run-test-btn" onclick="runTest()">Run Test</button>
+
+    <!-- Graph capture toggle -->
+    <label class="switch">
+      <input type="checkbox" id="graph-capture-toggle">
+      <span class="slider round"></span>
+    </label>
+    <span style="margin-left: 10px;">Capture Graphs During Test</span>
+    
+
+    <!-- Updated loading animation with text below spinner -->
+    <div id="loading-animation" style="display: none; margin: 15px 0; text-align: center;">
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <div class="spinner"></div>
+            <span style="margin-top: 10px;">Test Running...</span>
+        </div>
+    </div>
+
+    <div id="test-results"></div>
+
+    <!-- Graph display area -->
+    <div id="graph-results" style="display: none; margin-top: 20px;">
+      <h3>Measurement Graphs</h3>
+      <div id="graph-container"></div>
+    </div>
+
+    <!-- Action Buttons - Initially Hidden -->
+    <div id="action-buttons" style="display: none; margin-top: 15px; justify-content: flex-end; gap: 10px;">
+      
+      <button id="csv-btn" onclick="downloadCSV()" class="logo-btn" title="Download CSV">
+        <i class="fas fa-file-csv" style="color: #f8f7f7; font-size: 24px;"></i>
+        <span style="font-size: 12px; margin-left: 4px; color: #333;"></span>
+      </button>
+
+      <button id="pdf-btn" onclick="downloadPDF()" class="logo-btn" title="Download PDF">
+        <i class="fas fa-file-pdf" style="color: #f8f7f7; font-size: 24px;"></i>
+        <span style="font-size: 12px; margin-left: 4px; color: #333;"></span>
+      </button>
+
+      <button id="clear-results-btn" onclick="clearResults()" style="background-color: #f44336; color: #f8f7f7; padding: 8px 16px;" class="cancel">Clear Results</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let profiles = [];
+let editingProfileId = null;
+let currentProfileRemarks = '';
+let deviceIDN = '';
+
+function removeStep(stepId) {
+  const el = document.getElementById(`step-${stepId}`);
+  if (el) el.remove();
+}
+
+//variable to track graph capture state
+let captureGraphs = false;
+
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadProfiles();
+  
+  // event listener for profile selection change
+  document.getElementById('profile-select').addEventListener('change', updateRunButtonState);
+  
+  // event listener for graph capture toggle
+  document.getElementById('graph-capture-toggle').addEventListener('change', function() {
+    captureGraphs = this.checked;
+  });
+});
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    // Fetch and display Instrument IP
+    const ipRes = await fetch('/api/get-ip');
+    const ipData = await ipRes.json();
+    if (ipData.ip) {
+      document.getElementById('instrument-ip').value = ipData.ip;
+    }
+
+    // Fetch and display IDN info
+    const idnRes = await fetch('/api/get-idn');
+    const idnData = await idnRes.json();
+    if (idnData.idn) {
+      document.getElementById('device-info').innerText = `Connected to: ${idnData.idn}`;
+    } else {
+      document.getElementById('device-info').innerText = `Instrument info not found.`;
+    }
+  } catch (err) {
+    console.error("Error fetching instrument info:", err);
+    document.getElementById('device-info').innerText = "Failed to fetch instrument info.";
+  }
+});
+
+async function loadProfiles() {
+  try {
+    const response = await fetch('/api/profiles');
+    profiles = await response.json();
+    
+    // Verify profile structure
+    console.log("Loaded profiles:", profiles);
+    
+    updateProfileList();
+    updateProfileSelect();
+  } catch (error) {
+    console.error("Error loading profiles:", error);
+    alert("Failed to load profiles. Check console.");
+  }
+}
+
+function updateProfileList() {
+  const container = document.getElementById('profile-list');
+  container.innerHTML = '';
+  profiles.forEach(profile => {
+    const card = document.createElement('div');
+    card.className = 'profile-card';
+    
+    card.innerHTML = `
+      <div class="profile-card-header">
+        <h4>${profile.name}</h4>
+        <button class="delete-profile-btn" onclick="event.stopPropagation(); deleteProfile('${profile.id}')">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path fill="currentColor" d="M9,3V4H4V6H5V19A2,2 0 0,0 7,21H17A2,2 0 0,0 19,19V6H20V4H15V3H9M7,6H17V19H7V6M9,8V17H11V8H9M13,8V17H15V8H13Z"/>
+          </svg>
+        </button>
+      </div>
+      ${profile.remarks 
+        ? `<p class="profile-remarks">${profile.remarks}</p>` 
+        : `<p class="profile-steps">${profile.tests.length} test steps</p>`}
+      <button class="view-btn" onclick="event.stopPropagation(); viewProfile('${profile.id}')">
+        View
+      </button>
+    `;
+    
+    container.appendChild(card);
+  });
+}
+
+async function deleteProfile(profileId) {
+  if (confirm(`Are you sure you want to delete this profile?`)) {
+    try {
+      const response = await fetch(`/api/delete-profile/${profileId}`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        loadProfiles(); // Refresh the profile list
+      } else {
+        alert("Failed to delete profile");
+      }
+    } catch (error) {
+      console.error("Error deleting profile:", error);
+      alert("Error deleting profile");
+    }
+  }
+}
+
+function updateProfileSelect() {
+  const select = document.getElementById('profile-select');
+  select.innerHTML = '<option value="">-- Select a Profile --</option>';
+  profiles.forEach(profile => {
+    const option = document.createElement('option');
+    option.value = profile.id;
+    option.textContent = profile.name;
+    select.appendChild(option);
+  });
+  
+  // Update button state after updating the select
+  updateRunButtonState();
+}
+
+function showProfileCreator() {
+  editingProfileId = null;
+  document.getElementById('profile-creator').style.display = 'block';
+  document.getElementById('profile-name').value = '';
+  document.getElementById('profile-remarks').value = '';
+  document.getElementById('test-steps').innerHTML = '';
+}
+
+function hideProfileCreator() {
+  document.getElementById('profile-creator').style.display = 'none';
+}
+
+function addTestStep(step = null) {
+  const stepId = Date.now();
+  const stepDiv = document.createElement('div');
+  stepDiv.className = 'test-step';
+  stepDiv.id = `step-${stepId}`;
+
+  const source = step ? step.source : 'REAR';
+  const type = step ? step.type : 'DC_VOLTAGE';
+  const target = step ? step.target : 0;
+  const tolerance = step ? step.tolerance : 0.1;
+  const useRange = step ? step.useRange : false;
+  const min = step ? step.min : 0;
+  const max = step ? step.max : 5;
+  const useMean = step ? step.useMean : false;
+  const measurements = step ? step.measurements : 3;
+  const delay = step ? step.delay : 0.5;
+  const remarks = step ? (step.remarks || '') : '';
+
+  // Fixed the selected attribute for test type
+  stepDiv.innerHTML = `
+    <h4>Test Step</h4>
+    <label>Terminal:</label>
+    <select class="source">
+      <option value="REAR" ${source==='REAR'?'selected':''}>Rear Panel</option>
+      <option value="FRONT" ${source==='FRONT'?'selected':''}>Front Panel</option>
+    </select>
+    <label>Channel:</label>
+    <select class="channel" ${source==='FRONT' ? 'disabled' : ''}>
+      ${[...Array(10).keys()].map(i => `<option value="${i+1}" ${step && step.channel == i+1 ? 'selected' : ''}>Channel ${i+1}</option>`).join('')}
+    </select>
+    <label>Test Type:</label>
+    <select class="type">
+      <option value="DC_VOLTAGE" ${type==='DC_VOLTAGE'?'selected':''}>DC Voltage</option>
+      <option value="AC_VOLTAGE" ${type==='AC_VOLTAGE'?'selected':''}>AC Voltage</option>
+      <option value="DC_CURRENT" ${type==='DC_CURRENT'?'selected':''}>DC Current</option>
+      <option value="AC_CURRENT" ${type==='AC_CURRENT'?'selected':''}>AC Current</option>
+      <option value="RESISTANCE" ${type==='RESISTANCE'?'selected':''}>Resistance</option>
+      <option value="CAPACITANCE" ${type==='CAPACITANCE'?'selected':''}>Capacitance</option>
+      <option value="CONTINUITY" ${type==='CONTINUITY'?'selected':''}>Continuity/Ground</option>
+      <option value="FREQUENCY" ${type==='FREQUENCY'?'selected':''}>Frequency</option>
+      <option value="TEMPERATURE" ${type==='TEMPERATURE'?'selected':''}>Temperature</option>
+    </select><br>
+    <label>Target Value:</label>
+    <input type="number" class="target" value="${target}" step="0.1">
+    <label>Tolerance (±):</label>
+    <input type="number" class="tolerance" value="${tolerance}" step="0.1" min="0"><br>
+    <label><input type="checkbox" class="use-range" ${useRange?'checked':''}> Use Range</label>
+    <div class="range-options" style="display:${useRange?'block':'none'}; margin-left: 20px;">
+      <label>Min Value:</label>
+      <input type="number" class="min" value="${min}" step="0.1">
+      <label>Max Value:</label>
+      <input type="number" class="max" value="${max}" step="0.1"><br>
+    </div>
+    <label><input type="checkbox" class="use-mean" ${useMean?'checked':''}> Use Mean Value</label>
+    <div class="mean-options" style="display:${useMean?'block':'none'}; margin-left: 20px;">
+      <label>Measurements:</label>
+      <input type="number" class="measurements" value="${measurements}" min="1" max="100">
+      <label>Delay Between (s):</label>
+      <input type="number" class="delay" value="${delay}" step="0.1" min="0.1"><br>
+    </div>
+    <br><button class="cancel" onclick="removeStep('${stepId}')">Remove Step</button>
+  `;
+
+  stepDiv.querySelector('.source').addEventListener('change', function() {
+    const isFront = this.value === 'FRONT';
+    stepDiv.querySelector('.channel').disabled = isFront;
+  });
+
+  stepDiv.querySelector('.use-range').addEventListener('change', function() {
+    stepDiv.querySelector('.range-options').style.display = this.checked ? 'block' : 'none';
+  });
+
+  stepDiv.querySelector('.use-mean').addEventListener('change', function() {
+    stepDiv.querySelector('.mean-options').style.display = this.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('test-steps').appendChild(stepDiv);
+}
+
+async function saveProfile() {
+  const profileName = document.getElementById('profile-name').value.trim();
+  const remarks = document.getElementById('profile-remarks').value.trim();
+  if (!profileName) return alert("Please enter a profile name!");
+
+  const steps = [];
+  document.querySelectorAll('.test-step').forEach(step => {
+    const source = step.querySelector('.source').value;
+    const useRange = step.querySelector('.use-range').checked;
+    const useMean = step.querySelector('.use-mean').checked;
+    const channel = source === 'FRONT' ? null : step.querySelector('.channel').value;
+
+    steps.push({
+      source,
+      channel,
+      type: step.querySelector('.type').value,
+      target: parseFloat(step.querySelector('.target').value), // Keep target
+      tolerance: parseFloat(step.querySelector('.tolerance').value),
+      useRange,
+      min: useRange ? parseFloat(step.querySelector('.min').value) : null,
+      max: useRange ? parseFloat(step.querySelector('.max').value) : null,
+      useMean,
+      measurements: useMean ? parseInt(step.querySelector('.measurements').value) : 1,
+      delay: useMean ? parseFloat(step.querySelector('.delay').value) : 0.5
+      // Remove remarks from here
+    });
+  });
+
+  if (steps.length === 0) return alert("Please add at least one test step!");
+
+  const payload = {
+    name: profileName,
+    remarks,
+    steps
+  };
+  if (editingProfileId) payload.id = editingProfileId;
+
+  try {
+    const response = await fetch('/api/save-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json();
+    if (result.status === "success") {
+      alert("Profile saved successfully!");
+      hideProfileCreator();
+      loadProfiles();
+    } else {
+      alert("Error saving profile: " + (result.error || "Unknown error"));
+    }
+  } catch (error) {
+    console.error("Error:", error);
+    alert("Failed to save profile. Check console.");
+  }
+}
+
+// Show/hide quick test creator
+function showQuickTestCreator() {
+  document.getElementById('quick-test-creator').style.display = 'block';
+  addQuickTestStep(); // Add first step automatically
+}
+
+function hideQuickTestCreator() {
+  document.getElementById('quick-test-creator').style.display = 'none';
+  document.getElementById('quick-test-steps').innerHTML = ''; // Clear steps
+}
+
+function addQuickTestStep() {
+  const stepId = Date.now();
+  const stepDiv = document.createElement('div');
+  stepDiv.className = 'test-step';
+  stepDiv.id = `quick-step-${stepId}`;
+
+  stepDiv.innerHTML = `
+    <h4>Test Step</h4>
+    <label>Input Source:</label>
+    <select class="source" onchange="toggleChannelSelect(this)">
+      <option value="REAR">Rear Panel</option>
+      <option value="FRONT">Front Panel</option>
+    </select>
+    <label>Channel:</label>
+    <select class="channel">
+      ${[...Array(10).keys()].map(i => `<option value="${i+1}">Channel ${i+1}</option>`).join('')}
+    </select>
+    <label>Test Type:</label>
+    <select class="type">
+      <option value="DC_VOLTAGE">DC Voltage</option>
+      <option value="AC_VOLTAGE">AC Voltage</option>
+      <option value="DC_CURRENT">DC Current</option>
+      <option value="AC_CURRENT">AC Current</option>
+      <option value="RESISTANCE">Resistance</option>
+      <option value="CAPACITANCE">Capacitance</option>
+      <option value="CONTINUITY">Continuity</option>
+      <option value="FREQUENCY">Frequency</option>
+      <option value="TEMPERATURE">Temperature</option>
+    </select><br>
+    <label>Target Value:</label>
+    <input type="number" class="target" value="0" step="0.1">
+    <label>Tolerance (±):</label>
+    <input type="number" class="tolerance" value="0.1" step="0.1" min="0"><br>
+    <label><input type="checkbox" class="use-range"> Use Range</label>
+    <div class="range-options" style="display:none; margin-left: 20px;">
+      <label>Min Value:</label>
+      <input type="number" class="min" value="0" step="0.1"><br>
+      <label>Max Value:</label>
+      <input type="number" class="max" value="5" step="0.1"><br>
+    </div>
+    <label><input type="checkbox" class="use-mean"> Use Mean Value</label>
+    <div class="mean-options" style="display:none; margin-left: 20px;">
+      <label>Measurements:</label>
+      <input type="number" class="measurements" value="3" min="1" max="100"><br>
+      <label>Delay Between (s):</label>
+      <input type="number" class="delay" value="0.5" step="0.1" min="0.1"><br>
+    </div>
+    <button class="cancel" onclick="removeQuickStep('${stepId}')">Remove Step</button>
+  `;
+
+  // Initialize channel select state
+  const sourceSelect = stepDiv.querySelector('.source');
+  toggleChannelSelect(sourceSelect);
+
+  // Add event listeners
+  stepDiv.querySelector('.use-range').addEventListener('change', function() {
+    stepDiv.querySelector('.range-options').style.display = this.checked ? 'block' : 'none';
+  });
+
+  stepDiv.querySelector('.use-mean').addEventListener('change', function() {
+    stepDiv.querySelector('.mean-options').style.display = this.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('quick-test-steps').appendChild(stepDiv);
+}
+
+function toggleChannelSelect(sourceSelect) {
+  const stepDiv = sourceSelect.closest('.test-step');
+  const channelSelect = stepDiv.querySelector('.channel');
+  channelSelect.disabled = sourceSelect.value === 'FRONT';
+}
+
+function removeQuickStep(stepId) {
+  const el = document.getElementById(`quick-step-${stepId}`);
+  if (el) el.remove();
+}
+
+function clearQuickTest() {
+  document.getElementById('quick-test-steps').innerHTML = '';
+}
+
+async function runTest() { 
+  const profileId = document.getElementById('profile-select').value;
+  if (!profileId) return alert("Please select a profile!");
+
+  const profile = profiles.find(p => p.id == profileId);
+  if (!profile) return alert("Selected profile not found!");
+
+  // Show loading animation
+  document.getElementById('loading-animation').style.display = 'block';
+  
+  // Hide action buttons and graph results during test
+  document.getElementById('action-buttons').style.display = 'none';
+  document.getElementById('graph-results').style.display = 'none';
+  
+  // Clear previous results and graphs
+  document.getElementById('test-results').innerHTML = '';
+  document.getElementById('graph-container').innerHTML = '';
+
+  const ip = document.getElementById('instrument-ip').value;
+
+  try {
+    const response = await fetch('/api/run-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip,
+        steps: profile.tests.map(step => ({
+          ...step,
+          source: step.source || 'REAR',
+          remarks: step.remarks || ''
+        })),
+        captureGraphs: captureGraphs  // Send graph capture preference
+      })
+    });
+
+    const result = await response.json();
+
+    window.currentProfileRemarks = profile.remarks || '';
+    window.currentDeviceInfo = {
+      ip: ip,
+      idn: result.idn || 'Unknown Device'
+    };
+
+    displayResults(result);
+    
+    // Display graphs if available
+    if (captureGraphs && result.graphs && result.graphs.length > 0) {
+      displayGraphs(result.graphs, result.results);
+    }
+
+    // Show action buttons after test completion
+    document.getElementById('action-buttons').style.display = 'flex';
+
+  } catch (error) {
+    console.error("Error:", error);
+    alert("Failed to run test.");
+    
+    // Ensure buttons are hidden on error too
+    document.getElementById('csv-btn').style.display = 'none';
+    document.getElementById('pdf-btn').style.display = 'none';
+  } finally {
+    // Hide loading animation whether successful or not
+    document.getElementById('loading-animation').style.display = 'none';
+  }
+}
+
+//function to display graphs
+function displayGraphs(graphs, results) {
+  const container = document.getElementById('graph-container');
+  container.innerHTML = '';
+  
+  graphs.forEach(graphData => {
+    const stepIndex = graphData.step_index;
+    const stepResult = results[stepIndex];
+    
+    if (stepResult) {
+      const graphDiv = document.createElement('div');
+      graphDiv.className = 'graph-item';
+      
+      const channelLabel = stepResult.source === 'FRONT' ? 'FRONT' : `Channel ${stepResult.channel}`;
+      const title = `Step ${stepIndex + 1}: ${stepResult.type} (${channelLabel})`;
+      
+      graphDiv.innerHTML = `
+        <div class="graph-title">${title}</div>
+        <img class="graph-image" src="data:image/png;base64,${graphData.graph}" alt="${title}">
+      `;
+      
+      container.appendChild(graphDiv);
+    }
+  });
+  
+  // Show graph results container
+  document.getElementById('graph-results').style.display = 'block';
+}
+
+async function runQuickTest() {
+  const steps = [];
+  document.querySelectorAll('#quick-test-steps .test-step').forEach(step => {
+    const source = step.querySelector('.source').value;
+    const useRange = step.querySelector('.use-range').checked;
+    const useMean = step.querySelector('.use-mean').checked;
+    const channel = source === 'FRONT' ? null : step.querySelector('.channel').value;
+
+    steps.push({
+      source,
+      channel,
+      type: step.querySelector('.type').value,
+      target: parseFloat(step.querySelector('.target').value),
+      tolerance: parseFloat(step.querySelector('.tolerance').value),
+      useRange,
+      min: useRange ? parseFloat(step.querySelector('.min').value) : null,
+      max: useRange ? parseFloat(step.querySelector('.max').value) : null,
+      useMean,
+      measurements: useMean ? parseInt(step.querySelector('.measurements').value) : 1,
+      delay: useMean ? parseFloat(step.querySelector('.delay').value) : 0.5
+    });
+  });
+
+  if (steps.length === 0) return alert("Please add at least one test step!");
+
+  const ip = document.getElementById('instrument-ip').value;
+  const captureGraphs = document.getElementById('graph-capture-toggle').checked;
+
+  try {
+    // Show loading animation
+    document.getElementById('loading-animation').style.display = 'block';
+    
+    // Hide action buttons and graph results during test
+    document.getElementById('action-buttons').style.display = 'none';
+    document.getElementById('graph-results').style.display = 'none';
+    
+    // Clear previous results and graphs
+    document.getElementById('test-results').innerHTML = '';
+    document.getElementById('graph-container').innerHTML = '';
+
+    const response = await fetch('/api/run-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip,
+        steps,
+        isQuickTest: true,
+        captureGraphs: captureGraphs  // Send graph capture preference
+      })
+    });
+
+    const result = await response.json();
+    displayResults(result);
+    
+    // Display graphs if available
+    if (captureGraphs && result.graphs && result.graphs.length > 0) {
+      displayGraphs(result.graphs, result.results);
+    }
+    
+    // Show action buttons after test completion
+    document.getElementById('action-buttons').style.display = 'flex';
+
+  } catch (error) {
+    console.error("Error:", error);
+    alert("Failed to run quick test.");
+    
+    // Ensure buttons are hidden on error too
+    document.getElementById('csv-btn').style.display = 'none';
+    document.getElementById('pdf-btn').style.display = 'none';
+  } finally {
+    // Hide loading animation whether successful or not
+    document.getElementById('loading-animation').style.display = 'none';
+  }
+}
+
+async function downloadCSV() {
+  if (!window.latestResults || window.latestResults.length === 0) {
+    return alert("No test results to download.");
+  }
+
+  // Get test timestamp from first result
+  const testTimestamp = new Date(window.latestResults[0].timestamp * 1000);
+  const dateTime = testTimestamp.toLocaleString();
+  const profileName = document.getElementById('profile-select').options[
+    document.getElementById('profile-select').selectedIndex
+  ].text;
+
+  // Create filename with sanitized profile name and timestamp
+  const safeProfileName = profileName.replace(/[^a-z0-9]/gi, '_');
+  const timestampStr = testTimestamp.toISOString().replace(/[:.]/g, '-');
+
+  // Get device info
+  let ip = 'Unknown';
+  let idn = 'Unknown';
+  try {
+    const [ipRes, idnRes] = await Promise.all([
+      fetch('/api/get-ip'),
+      fetch('/api/get-idn')
+    ]);
+    const ipData = await ipRes.json();
+    const idnData = await idnRes.json();
+    ip = ipData.ip || 'Unknown';
+    idn = idnData.idn || 'Unknown';
+  } catch (err) {
+    console.error('Error fetching device info:', err);
+  }
+
+  // Get profile remarks from current profile
+  const profileId = document.getElementById('profile-select').value;
+  const profile = profiles.find(p => p.id == profileId);
+  const profileRemarks = profile?.remarks || '';
+
+  // Define units mapping
+  const unitMap = {
+    'DC_VOLTAGE': 'V',
+    'AC_VOLTAGE': 'V',
+    'DC_CURRENT': 'A',
+    'AC_CURRENT': 'A',
+    'RESISTANCE': 'Ω',
+    'CAPACITANCE': 'F',
+    'CONTINUITY': 'Ω',
+    'FREQUENCY': 'Hz',
+    'TEMPERATURE': '°C'
+  };
+
+  // Create CSV content
+  const rows = [
+    ['Test Report'],
+    ['Test Date/Time:', dateTime],
+    ['Device IP:', ip],
+    ['Device IDN:', idn],
+    [],
+    ['Test Profile:', profileName],
+    ['Remarks:', profileRemarks],
+    [],
+    ['Channel', 'Type', 'Value', 'Target', 'Status', 'Units']
+  ];
+
+  // Add test results
+  window.latestResults.forEach(r => {
+    const unit = unitMap[r.type] || '';
+    rows.push([
+      r.source === 'FRONT' ? 'FRONT' : r.channel || '—',
+      r.type || 'VOLTAGE',
+      (r.value || 0).toFixed(4) + (unit ? ` ${unit}` : ''),
+      r.target ? `${r.target} ${unit}` : '',
+      r.passed ? 'PASS' : 'FAIL',
+      unit
+    ]);
+  });
+
+  // Convert to CSV string
+  const csv = rows.map(row => 
+    row.map(field => `"${field.toString().replace(/"/g, '""')}"`).join(',')
+  ).join('\n');
+
+  // Create and trigger download
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  
+  link.href = url;
+  link.download = `TestResults_${safeProfileName}_${timestampStr}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  
+  // Cleanup
+  setTimeout(() => {
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+async function downloadPDF() {
+  if (!window.latestResults || window.latestResults.length === 0) {
+    return alert("No test results to download.");
+  }
+
+  // Get test data
+  const testTime = new Date(window.latestResults[0].timestamp * 1000);
+  const dateTime = testTime.toLocaleString();
+  const profileName = document.getElementById('profile-select').options[
+    document.getElementById('profile-select').selectedIndex
+  ].text;
+  const safeProfileName = profileName.replace(/[^a-z0-9]/gi, '_');
+  const timestampStr = testTime.toISOString().replace(/[:.]/g, '-');
+  const fileName = `TestReport_${safeProfileName}_${timestampStr}.pdf`;
+
+  // Get device info
+  let ip = 'Unknown';
+  let idn = 'Unknown';
+  try {
+    const [ipRes, idnRes] = await Promise.all([
+      fetch('/api/get-ip'),
+      fetch('/api/get-idn')
+    ]);
+    const ipData = await ipRes.json();
+    const idnData = await idnRes.json();
+    ip = ipData.ip || 'Unknown';
+    idn = idnData.idn || 'Unknown';
+  } catch (err) {
+    console.error('Error fetching device info:', err);
+  }
+
+  // Get profile remarks
+  const profileId = document.getElementById('profile-select').value;
+  const profile = profiles.find(p => p.id == profileId);
+  const profileRemarks = profile?.remarks || '';
+
+  // Check if graphs are available
+  const hasGraphs = captureGraphs && window.latestGraphs && window.latestGraphs.length > 0;
+
+  // Create PDF window with logo
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <html>
+      <head>
+        <title>Test Results</title>
+        <style>
+          body { font-family: Arial; margin: 20px; }
+          .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+          .logo { height: 100px; }
+          h1 { color: #2c3e50; margin: 0; }
+          .info-block { margin-bottom: 15px; }
+          table { border-collapse: collapse; margin-top: 10px; width: 100%; }
+          th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+          th { background: #f0f0f0; }
+          .pass { color: green; }
+          .fail { color: red; }
+          .graph-container { margin: 20px 0; page-break-inside: avoid; }
+          .graph-title { font-weight: bold; margin-bottom: 10px; }
+          .graph-image { max-width: 100%; height: auto; border: 1px solid #ddd; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Test Report</h1>
+          <img src="/innirion_gmbh_logo.jpeg" class="logo" alt="Company Logo">
+        </div>
+        <div class="info-block"><strong>Test Date/Time:</strong> ${dateTime}</div>
+        <div class="info-block"><strong>Device IP:</strong> ${ip}<br><strong>Device IDN:</strong> ${idn}</div>
+        <div class="info-block"><strong>Test Profile:</strong> ${profileName}</div>
+  `);
+
+  if (profileRemarks) {
+    win.document.write(`<div class="info-block"><strong>Remarks:</strong> ${profileRemarks}</div>`);
+  }
+
+  win.document.write(`
+    <h3>Test Results</h3>
+    <table>
+      <tr>
+        <th>Channel</th>
+        <th>Type</th>
+        <th>Value</th>
+        <th>Target</th>
+        <th>Status</th>
+      </tr>
+  `);
+
+  const unitMap = {
+    'DC_VOLTAGE': 'V',
+    'AC_VOLTAGE': 'V',
+    'DC_CURRENT': 'A',
+    'AC_CURRENT': 'A',
+    'RESISTANCE': 'Ω',
+    'CAPACITANCE': 'F',
+    'CONTINUITY': 'Ω',
+    'FREQUENCY': 'Hz',
+    'TEMPERATURE': '°C'
+  };
+
+  window.latestResults.forEach(r => {
+    const unit = unitMap[r.type] || '';
+    win.document.write(`
+      <tr>
+        <td>${r.source === 'FRONT' ? 'FRONT' : r.channel || '—'}</td>
+        <td>${r.type || 'VOLTAGE'}</td>
+        <td>${(r.value || 0).toFixed(4)}${unit}</td>
+        <td>${r.target || ''}</td>
+        <td class="${r.passed ? 'pass' : 'fail'}">${r.passed ? 'PASS' : 'FAIL'}</td>
+      </tr>
+    `);
+  });
+
+  win.document.write('</table>');
+
+  // Add graphs to PDF if available
+  if (hasGraphs) {
+    win.document.write('<h3>Measurement Graphs</h3>');
+    window.latestGraphs.forEach(graphData => {
+      const stepIndex = graphData.step_index;
+      const stepResult = window.latestResults[stepIndex];
+      
+      if (stepResult) {
+        const channelLabel = stepResult.source === 'FRONT' ? 'FRONT' : `Channel ${stepResult.channel}`;
+        const title = `Step ${stepIndex + 1}: ${stepResult.type} (${channelLabel})`;
+        
+        win.document.write(`
+          <div class="graph-container">
+            <div class="graph-title">${title}</div>
+            <img class="graph-image" src="data:image/png;base64,${graphData.graph}" alt="${title}">
+          </div>
+        `);
+      }
+    });
+  }
+
+  win.document.write('</body></html>');
+  win.document.close();
+
+  // Print with suggested filename
+  win.onload = function() {
+    setTimeout(() => {
+      win.print();
+      try {
+        win.document.title = fileName;
+      } catch (e) {
+        console.log("Couldn't set PDF title:", e);
+      }
+    }, 500);
+  };
+}
+
+function updateRunButtonState() {
+  const profileSelect = document.getElementById('profile-select');
+  const runButton = document.getElementById('run-test-btn');
+  
+  if (profileSelect.value) {
+    runButton.classList.remove('disabled');
+    runButton.classList.add('enabled');
+  } else {
+    runButton.classList.remove('enabled');
+    runButton.classList.add('disabled');
+  }
+}
+
+function displayResults(data) {
+  const container = document.getElementById('test-results');
+  container.innerHTML = '<h3>Test Results</h3>';
+
+  // Store graphs for PDF export
+  if (data.graphs) {
+    window.latestGraphs = data.graphs;
+  }
+
+  // Add profile remarks display
+  const profile = profiles.find(p => p.id == document.getElementById('profile-select').value);
+  if (profile && profile.remarks) {
+    container.innerHTML += `
+      <div class="profile-remarks" style="
+        margin: 10px 0;
+        padding: 10px;
+        background: #f8f8f8;
+        border-left: 3px solid #2196F3;
+        border-radius: 4px;
+      ">
+        <strong>Remarks:</strong> ${profile.remarks}
+      </div>
+    `;
+  }
+
+  if (!data.results || data.results.length === 0) {
+    container.innerHTML += '<p>No results returned</p>';
+    return;
+  }
+
+  const typeMap = {
+    'DC_VOLTAGE': {name: 'DC Voltage', unit: 'V'},
+    'AC_VOLTAGE': {name: 'AC Voltage', unit: 'V'},
+    'DC_CURRENT': {name: 'DC Current', unit: 'A'},
+    'AC_CURRENT': {name: 'AC Current', unit: 'A'},
+    'RESISTANCE': {name: 'Resistance', unit: 'Ω'},
+    'CAPACITANCE': {name: 'Capacitance', unit: 'F'},
+    'CONTINUITY': {name: 'Continuity', unit: 'Ω'}, 
+    'FREQUENCY': {name: 'Frequency', unit: 'Hz'},
+    'TEMPERATURE': {name: 'Temperature', unit: '°C'}
+  };
+
+  const table = document.createElement('table');
+  table.style.borderCollapse = 'collapse';
+  table.style.marginTop = '10px';
+  table.style.width = '100%';
+  table.innerHTML = `
+    <tr style="background-color:#f0f0f0">
+      <th style="padding: 10px; text-align: left; padding-left: 10px;">Channel</th>
+      <th style="padding: 10px; text-align: left; padding-left: 10px;">Measurement Type</th>
+      <th style="padding: 10px; text-align: left; padding-left: 10px;">Value</th>
+      <th style="padding: 10px; text-align: left; padding-left: 10px;">Target Value</th>
+      <th style="padding: 10px; text-align: left; padding-left: 10px;">Status</th>
+    </tr>
+  `;
+
+  data.results.forEach(result => {
+    const typeLabel = typeMap[result.type?.toUpperCase()] || result.type || 'Voltage';
+    const channelLabel = result.source === 'FRONT' ? 'FRONT' : result.channel || '—';
+    const targetVal = result.target || '';
+    const unit = typeMap[result.type]?.unit || '';
+    
+    // Special handling for Continuity test
+    let valueDisplay;
+    if (result.type?.toUpperCase() === 'CONTINUITY') {
+      valueDisplay = `${(result.value || 0).toFixed(4)} Ω (${result.passed ? 'Connected' : 'Open'})`;
+    } else {
+      valueDisplay = `${(result.value || 0).toFixed(4)} ${unit}`;
+    }
+
+    const row = document.createElement('tr');
+
+    row.innerHTML = `
+      <td style="padding-left: 10px; padding-top: 8px; padding-bottom: 8px;">${channelLabel}</td>
+      <td style="padding-left: 10px; padding-top: 8px; padding-bottom: 8px;">${typeMap[result.type]?.name || result.type}</td>
+      <td style="padding-left: 10px; padding-top: 8px; padding-bottom: 8px;">${valueDisplay}</td>
+      <td style="padding-left: 10px; padding-top: 8px; padding-bottom: 8px;">${targetVal}</td>
+      <td style="padding-left: 10px; padding-top: 8px; padding-bottom: 8px;" class="${result.passed ? 'result-pass' : 'result-fail'}">
+        ${result.passed ? 'PASS' : 'FAIL'}
+      </td>
+    `;
+    table.appendChild(row);
+  });
+
+  window.latestResults = data.results;
+  container.appendChild(table);
+  
+}
+
+function clearResults() {
+  // Clear the test results display
+  document.getElementById('test-results').innerHTML = '';
+  
+  // Hide the Clear Results button
+  //document.getElementById('clear-results-btn').style.display = 'none';
+  
+  // Hide all action buttons
+  document.getElementById('action-buttons').style.display = 'none';
+}
+
+function viewProfile(profileId) {
+  const profile = profiles.find(p => p.id == profileId);
+  if (!profile) return;
+  editingProfileId = profileId;
+  document.getElementById('profile-name').value = profile.name;
+  document.getElementById('profile-remarks').value = profile.remarks || '';
+  document.getElementById('test-steps').innerHTML = '';
+  profile.tests.forEach(step => {
+    // Make sure step remarks are passed to addTestStep
+    addTestStep({
+      ...step,
+      remarks: step.remarks || ''  // Ensure remarks exists
+    });
+  });
+  document.getElementById('profile-creator').style.display = 'block';
+}
+
+</script>
+</body>
+</html>
